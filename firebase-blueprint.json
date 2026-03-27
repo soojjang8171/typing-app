@@ -1,0 +1,44 @@
+{
+  "entities": {
+    "Room": {
+      "title": "Room",
+      "description": "A typing competition room created by a teacher.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "The unique 6-character room code." },
+        "teacherId": { "type": "string", "description": "The UID of the teacher who created the room." },
+        "status": { "type": "string", "enum": ["waiting", "playing", "finished"], "description": "The current status of the game." },
+        "words": { "type": "array", "items": { "type": "string" }, "description": "The list of words to type." },
+        "currentWordIndex": { "type": "integer", "description": "The index of the word currently being typed." },
+        "wordStartTime": { "type": "integer", "description": "The timestamp when the current word started." },
+        "durationPerWord": { "type": "integer", "description": "The time limit for each word in seconds." },
+        "createdAt": { "type": "integer", "description": "The timestamp when the room was created." }
+      },
+      "required": ["id", "teacherId", "status", "words", "currentWordIndex", "durationPerWord", "createdAt"]
+    },
+    "Participant": {
+      "title": "Participant",
+      "description": "A student participating in a typing competition.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "The UID of the participant." },
+        "name": { "type": "string", "description": "The display name of the participant." },
+        "roomId": { "type": "string", "description": "The ID of the room they are in." },
+        "scores": { "type": "object", "description": "A map of word indices to scores." },
+        "totalScore": { "type": "integer", "description": "The total points earned." },
+        "lastUpdated": { "type": "integer", "description": "The timestamp of the last update." }
+      },
+      "required": ["id", "name", "roomId", "scores", "totalScore", "lastUpdated"]
+    }
+  },
+  "firestore": {
+    "/rooms/{roomId}": {
+      "schema": "Room",
+      "description": "The main room document."
+    },
+    "/rooms/{roomId}/participants/{participantId}": {
+      "schema": "Participant",
+      "description": "Participants in the room."
+    }
+  }
+}

@@ -1,0 +1,76 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isRoomTeacher(roomData) {
+      return isAuthenticated() && request.auth.uid == roomData.teacherId;
+    }
+
+    function isParticipant(participantId) {
+      return isAuthenticated() && request.auth.uid == participantId;
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    function isValidRoom(data) {
+      return data.id is string && data.id.matches('^[0-9]{6}$') &&
+             data.teacherId is string &&
+             data.status in ['waiting', 'playing', 'finished'] &&
+             data.words is list &&
+             data.currentWordIndex is number &&
+             data.durationPerWord is number &&
+             data.createdAt is number &&
+             (!('wordStartTime' in data) || data.wordStartTime == null || data.wordStartTime is number);
+    }
+
+    function isValidParticipant(data) {
+      return data.id is string &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 50 &&
+             data.roomId is string &&
+             data.scores is map &&
+             data.totalScore is number &&
+             data.lastUpdated is number;
+    }
+
+    // ===============================================================
+    // Match Rules
+    // ===============================================================
+    match /rooms/{roomId} {
+      // Anyone can read a room if they have the code
+      allow read: if true;
+      
+      // Only authenticated users can create a room
+      allow create: if isAuthenticated() && isValidRoom(request.resource.data) && request.resource.data.teacherId == request.auth.uid;
+      
+      // Only the teacher can update or delete the room
+      allow update: if isRoomTeacher(resource.data) && isValidRoom(request.resource.data);
+      allow delete: if isRoomTeacher(resource.data);
+      
+      // Participants subcollection
+      match /participants/{participantId} {
+        // Anyone in the room can see other participants (for leaderboard)
+        allow read: if true;
+        
+        // Anyone can join a room that is in 'waiting' status
+        allow create: if isAuthenticated() && 
+                        get(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'waiting' &&
+                        isValidParticipant(request.resource.data) &&
+                        request.resource.data.id == request.auth.uid;
+        
+        // Participants can only update their own scores
+        allow update: if isParticipant(participantId) && 
+                        isValidParticipant(request.resource.data) &&
+                        request.resource.data.id == resource.data.id &&
+                        request.resource.data.name == resource.data.name &&
+                        request.resource.data.roomId == resource.data.roomId;
+      }
+    }
+  }
+}

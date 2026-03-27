@@ -1,0 +1,5 @@
+{
+  "name": "실시간 타자 대회 (Typing Master)",
+  "description": "선생님과 학생들이 함께 즐기는 실시간 타자 대회 플랫폼입니다. 카훗 스타일의 자동 진행과 실시간 랭킹을 지원합니다.",
+  "requestFramePermissions": []
+}
