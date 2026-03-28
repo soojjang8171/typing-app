@@ -20,15 +20,8 @@ import {
   increment,
   getDocFromServer
 } from 'firebase/firestore';
-import { 
-  signInWithPopup,
-  GoogleAuthProvider,
-  onAuthStateChanged,
-  User,
-  signOut
-} from 'firebase/auth';
 import { GoogleGenAI } from "@google/genai";
-import { db, auth } from './firebase';
+import { db } from './firebase';
 import { Room, Participant } from './types';
 import { cn } from './lib/utils';
 import { 
@@ -54,6 +47,22 @@ import {
   Rocket
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+
+// --- Helper Functions ---
+
+function generateUserId(): string {
+  return 'user_' + Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
+}
+
+function getOrCreateUserId(): string {
+  const existing = localStorage.getItem('typing_app_user_id');
+  if (existing) return existing;
+  const newId = generateUserId();
+  localStorage.setItem('typing_app_user_id', newId);
+  return newId;
+}
+
+const currentUserId = getOrCreateUserId();
 
 // --- Error Handling ---
 
@@ -89,17 +98,12 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData.map(provider => ({
-        providerId: provider.providerId,
-        displayName: provider.displayName,
-        email: provider.email,
-        photoUrl: provider.photoURL
-      })) || []
+      userId: currentUserId,
+      email: null,
+      emailVerified: false,
+      isAnonymous: false,
+      tenantId: null,
+      providerInfo: []
     },
     operationType,
     path
@@ -158,7 +162,7 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
 
 // --- Components ---
 
-const Header = ({ user, onLogout }: { user: User | null, onLogout: () => void }) => (
+const Header = ({ onBack }: { onBack?: () => void }) => (
   <header className="border-b border-zinc-100 bg-white sticky top-0 z-10 shadow-sm">
     <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
       <div className="flex items-center gap-3">
@@ -172,21 +176,6 @@ const Header = ({ user, onLogout }: { user: User | null, onLogout: () => void })
           <p className="text-[10px] text-zinc-400 font-bold uppercase tracking-widest">Typing Adventure</p>
         </div>
       </div>
-      {user && (
-        <div className="flex items-center gap-4">
-          <div className="text-right hidden sm:block">
-            <p className="text-sm font-bold text-zinc-800">{user.displayName || '친구'}</p>
-            <p className="text-[10px] text-zinc-400">{user.email}</p>
-          </div>
-          <button 
-            onClick={onLogout}
-            className="p-2.5 text-zinc-400 hover:text-rose-500 hover:bg-rose-50 rounded-2xl transition-all border border-transparent hover:border-rose-100"
-            title="로그아웃"
-          >
-            <LogOut size={20} />
-          </button>
-        </div>
-      )}
     </div>
   </header>
 );
@@ -270,14 +259,14 @@ const Input = ({
 // --- Main App ---
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
   const [view, setView] = useState<'landing' | 'teacher' | 'student' | 'room'>('landing');
   const [room, setRoom] = useState<Room | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [playerName, setPlayerName] = useState('');
+  const [teacherName, setTeacherName] = useState('');
   const [roomCode, setRoomCode] = useState('');
   const [isTeacher, setIsTeacher] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Game state
@@ -308,32 +297,21 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const testConnection = async () => {
-      try {
-        await getDocFromServer(doc(db, 'test', 'connection'));
-      } catch (error) {
-        if (error instanceof Error && error.message.includes('the client is offline')) {
-          console.error("Firebase 연결에 실패했습니다. 설정을 확인해 주세요.");
-        }
-      }
-    };
-    testConnection();
-
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      setLoading(false);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  useEffect(() => {
     if (!room) return;
 
     const unsubscribe = onSnapshot(
       collection(db, 'rooms', room.id, 'participants'),
       (snapshot) => {
         const pList = snapshot.docs.map(doc => doc.data() as Participant);
-        setParticipants(pList.sort((a, b) => b.totalScore - a.totalScore));
+        setParticipants(
+          pList.sort((a, b) => {
+            if (b.totalScore !== a.totalScore) return b.totalScore - a.totalScore;
+            const aCorrectAt = a.lastCorrectAt ?? Number.MAX_SAFE_INTEGER;
+            const bCorrectAt = b.lastCorrectAt ?? Number.MAX_SAFE_INTEGER;
+            if (aCorrectAt !== bCorrectAt) return aCorrectAt - bCorrectAt;
+            return a.lastUpdated - b.lastUpdated;
+          })
+        );
         
         if (user) {
           const me = pList.find(p => p.id === user.uid);
@@ -350,8 +328,8 @@ export default function App() {
         
         if (roomData.status === 'playing' && roomData.wordStartTime) {
           const now = Date.now();
-          const elapsed = Math.floor((now - roomData.wordStartTime) / 1000);
-          const remaining = Math.max(0, roomData.durationPerWord - elapsed);
+          const msLeft = roomData.durationPerWord * 1000 - (now - roomData.wordStartTime);
+          const remaining = Math.max(0, Math.ceil(msLeft / 1000));
           setTimeLeft(remaining);
         }
       } else {
@@ -368,23 +346,26 @@ export default function App() {
 
   // Timer logic
   useEffect(() => {
-    if (room?.status !== 'playing' || timeLeft <= 0) return;
+    if (room?.status !== 'playing' || !room.wordStartTime) return;
 
-    const timer = setInterval(() => {
-      setTimeLeft(prev => {
-        if (prev <= 1) {
-          // Time's up! If teacher, move to next word
-          if (isTeacher) {
-            handleNextWord();
-          }
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
+    let advanced = false;
+    const tick = () => {
+      const msLeft = room.durationPerWord * 1000 - (Date.now() - room.wordStartTime!);
+      const remaining = Math.max(0, Math.ceil(msLeft / 1000));
+      setTimeLeft(remaining);
+
+      // Advance exactly when the 5-second window ends.
+      if (msLeft <= 0 && isTeacher && !advanced) {
+        advanced = true;
+        handleNextWord();
+      }
+    };
+
+    tick();
+    const timer = setInterval(tick, 100);
 
     return () => clearInterval(timer);
-  }, [room?.status, timeLeft, isTeacher]);
+  }, [room?.status, room?.wordStartTime, room?.currentWordIndex, room?.durationPerWord, isTeacher]);
 
   const handleNextWord = async () => {
     if (!room || !isTeacher) return;
@@ -406,39 +387,10 @@ export default function App() {
     }
   };
 
-  const login = async () => {
-    const provider = new GoogleAuthProvider();
-    try {
-      const result = await signInWithPopup(auth, provider);
-      return result.user;
-    } catch (error) {
-      console.error("Login Error:", error);
-      setError("로그인에 실패했습니다. 팝업 차단 설정을 확인해 주세요.");
-      return null;
-    }
-  };
-
   const createRoom = async (words: string[], duration: number) => {
     try {
       setLoading(true);
       setError(null);
-      
-      let currentUser = auth.currentUser;
-      if (!currentUser) {
-        currentUser = await login();
-      }
-      
-      if (!currentUser) {
-        setLoading(false);
-        return;
-      }
-      
-      // Clean up any existing rooms owned by this teacher
-      const existingRoomsQuery = query(collection(db, 'rooms'), where('teacherId', '==', currentUser.uid));
-      const existingRoomsSnap = await getDocs(existingRoomsQuery);
-      for (const roomDoc of existingRoomsSnap.docs) {
-        await deleteDoc(roomDoc.ref);
-      }
       
       // Robust 6-digit numeric ID generation
       const chars = '0123456789';
@@ -449,7 +401,7 @@ export default function App() {
 
       const newRoom: Room = {
         id: newRoomId,
-        teacherId: currentUser.uid,
+        teacherId: currentUserId,
         status: 'waiting',
         words,
         currentWordIndex: 0,
@@ -489,16 +441,6 @@ export default function App() {
       
       const trimmedCode = code.trim().toUpperCase();
       
-      let currentUser = auth.currentUser;
-      if (!currentUser) {
-        currentUser = await login();
-      }
-
-      if (!currentUser) {
-        setLoading(false);
-        return;
-      }
-
       const roomRef = doc(db, 'rooms', trimmedCode);
       let roomSnap;
       try {
@@ -520,18 +462,18 @@ export default function App() {
       }
 
       const participant: Participant = {
-        id: currentUser.uid,
+        id: currentUserId,
         name,
         roomId: trimmedCode,
         scores: {},
         totalScore: 0,
-        lastUpdated: Date.now()
+        lastUpdated: Date.now(),
       };
 
       try {
-        await setDoc(doc(db, 'rooms', trimmedCode, 'participants', currentUser.uid), participant);
+        await setDoc(doc(db, 'rooms', trimmedCode, 'participants', currentUserId), participant);
       } catch (error) {
-        handleFirestoreError(error, OperationType.WRITE, `rooms/${trimmedCode}/participants/${currentUser.uid}`);
+        handleFirestoreError(error, OperationType.WRITE, `rooms/${trimmedCode}/participants/${currentUserId}`);
       }
       setRoom(roomData);
       setIsTeacher(false);
@@ -583,12 +525,14 @@ export default function App() {
 
     // Calculate total score: 1 point per correct word
     const newTotalScore = Object.values(newScores).filter((s: any) => s.accuracy === 100).length;
+    const isNewCorrect = isCorrect && !myParticipant.scores[room.currentWordIndex]?.accuracy;
 
     try {
       await updateDoc(doc(db, 'rooms', room.id, 'participants', myParticipant.id), {
         scores: newScores,
         totalScore: newTotalScore,
-        lastUpdated: now
+        lastUpdated: now,
+        ...(isNewCorrect ? { lastCorrectAt: now } : {})
       });
       setCurrentInput('');
       return isCorrect ? 'correct' : 'wrong';
@@ -597,17 +541,6 @@ export default function App() {
       return 'error';
     }
   };
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-zinc-50 flex items-center justify-center">
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
-          <p className="text-zinc-500 font-medium">준비 중입니다...</p>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <ErrorBoundary>
@@ -622,7 +555,7 @@ export default function App() {
           <motion.div animate={{ y: [0, -20, 0] }} transition={{ duration: 5, repeat: Infinity, ease: "easeInOut", delay: 5 }} className="absolute top-[20%] right-[25%] text-4xl">🌸</motion.div>
         </div>
 
-        <Header user={user} onLogout={() => signOut(auth)} />
+        <Header />
 
         <main className="max-w-7xl mx-auto px-6 py-12 relative z-1">
           <AnimatePresence mode="wait">
@@ -725,25 +658,79 @@ export default function App() {
 
 function TeacherSetup({ onCreate, onBack, error }: { onCreate: (words: string[], duration: number) => void, onBack: () => void, error: string | null }) {
   const [wordsInput, setWordsInput] = useState('');
-  const [duration, setDuration] = useState(30);
+  const [duration, setDuration] = useState(5);
   const [theme, setTheme] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [hasGeneratedWords, setHasGeneratedWords] = useState(false);
+
+  const normalizeGeneratedWords = (raw: string, topic: string) => {
+    const unique = new Set<string>();
+    const cleaned = raw
+      .split(/\r?\n|,/)
+      .map((line) => line.trim())
+      .map((line) => line.replace(/^(\d+[\).\-\s]+|[-*]\s*)/, ''))
+      .map((line) => line.replace(/^["'`]+|["'`]+$/g, ''))
+      .filter((line) => line.length > 0);
+
+    for (const word of cleaned) {
+      if (!unique.has(word)) unique.add(word);
+      if (unique.size >= 20) break;
+    }
+
+    const words = Array.from(unique);
+    while (words.length < 20) words.push(`${topic} ${words.length + 1}`);
+    return words.slice(0, 20);
+  };
+
+  const getFallbackWords = (topic: string) => {
+    const presets: Record<string, string[]> = {
+      '동물': ['강아지', '고양이', '사자', '호랑이', '코끼리', '기린', '하마', '얼룩말', '토끼', '다람쥐', '곰', '늑대', '여우', '판다', '펭귄', '독수리', '돌고래', '고래', '문어', '나비'],
+      '과일': ['사과', '배', '바나나', '딸기', '포도', '수박', '참외', '복숭아', '자두', '체리', '귤', '오렌지', '망고', '파인애플', '키위', '레몬', '블루베리', '라즈베리', '감', '멜론'],
+      '채소': ['상추', '배추', '양배추', '오이', '당근', '감자', '고구마', '양파', '대파', '마늘', '토마토', '브로콜리', '파프리카', '가지', '호박', '무', '콩나물', '시금치', '버섯', '옥수수'],
+      '학교': ['교실', '칠판', '연필', '지우개', '공책', '책상', '의자', '가방', '도서관', '운동장', '시험', '숙제', '수업', '선생님', '친구', '급식', '종례', '방학', '발표', '미술'],
+      '우주': ['수성', '금성', '지구', '화성', '목성', '토성', '천왕성', '해왕성', '태양', '달', '별', '은하', '은하수', '성운', '블랙홀', '혜성', '유성', '소행성', '우주선', '로켓'],
+      '속담': ['가는 말이 고와야 오는 말이 곱다', '백지장도 맞들면 낫다', '티끌 모아 태산', '낮말은 새가 듣고 밤말은 쥐가 듣는다', '원숭이도 나무에서 떨어진다', '등잔 밑이 어둡다', '고래 싸움에 새우 등 터진다', '세 살 버릇 여든까지 간다', '콩 심은 데 콩 나고 팥 심은 데 팥 난다', '말 한마디에 천 냥 빚도 갚는다', '우물 안 개구리', '호랑이도 제 말 하면 온다', '돌다리도 두들겨 보고 건너라', '시작이 반이다', '웃는 얼굴에 침 못 뱉는다', '배보다 배꼽이 더 크다', '금강산도 식후경', '열 번 찍어 안 넘어가는 나무 없다', '개구리 올챙이 적 생각 못 한다', '하늘의 별 따기'],
+    };
+
+    const normalized = topic.trim().toLowerCase();
+    const found =
+      presets[topic.trim()] ||
+      Object.entries(presets).find(([k]) => normalized.includes(k.toLowerCase()))?.[1];
+
+    if (found) {
+      const shuffled = [...found].sort(() => Math.random() - 0.5);
+      return shuffled.slice(0, 20);
+    }
+    return Array.from({ length: 20 }, (_, i) => `${topic} ${i + 1}`);
+  };
 
   const generateWords = async () => {
-    if (!theme.trim()) return;
+    const topic = theme.trim();
+    if (!topic) return;
     setIsGenerating(true);
+    setHasGeneratedWords(false);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const apiKey = process.env.GEMINI_API_KEY?.trim();
+      if (!apiKey) {
+        setWordsInput(getFallbackWords(topic).join('\n'));
+        setHasGeneratedWords(true);
+        return;
+      }
+
+      const ai = new GoogleGenAI({ apiKey });
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: `주제: "${theme}". 이 주제와 관련된 한국어 낱말 또는 짧은 문장 20개를 생성해줘. 각 항목은 줄바꿈으로 구분해줘. 다른 설명 없이 낱말들만 나열해줘.`,
+        model: "gemini-2.5-flash",
+        contents: `주제: "${topic}". 이 주제와 관련된 한국어 낱말 또는 짧은 문장 20개를 생성해줘. 각 항목은 줄바꿈으로 구분해줘. 다른 설명 없이 낱말들만 나열해줘.`,
       });
       
-      if (response.text) {
-        setWordsInput(response.text.trim());
-      }
+      const text = response.text?.trim() || '';
+      if (!text) throw new Error('Empty AI response');
+      setWordsInput(normalizeGeneratedWords(text, topic).join('\n'));
+      setHasGeneratedWords(true);
     } catch (err) {
       console.error("AI Generation Error:", err);
+      setWordsInput(getFallbackWords(topic).join('\n'));
+      setHasGeneratedWords(true);
     } finally {
       setIsGenerating(false);
     }
@@ -780,7 +767,10 @@ function TeacherSetup({ onCreate, onBack, error }: { onCreate: (words: string[],
               <input
                 type="text"
                 value={theme}
-                onChange={(e) => setTheme(e.target.value)}
+                onChange={(e) => {
+                  setTheme(e.target.value);
+                  setHasGeneratedWords(false);
+                }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     e.preventDefault();
@@ -789,13 +779,20 @@ function TeacherSetup({ onCreate, onBack, error }: { onCreate: (words: string[],
                     }
                   }
                 }}
-                placeholder="예: 동물, 과일, 우주, 속담..."
+                placeholder="주제를 입력해 주세요"
                 className="flex-1 px-5 py-3 rounded-2xl border border-zinc-200 bg-white focus:outline-none focus:border-pastel-purple transition-all font-bold text-zinc-800"
               />
               <Button 
                 onClick={generateWords} 
                 disabled={isGenerating || !theme.trim()}
-                className="px-6 py-3 h-auto text-sm bg-zinc-800 text-white hover:bg-zinc-700 rounded-2xl shadow-none"
+                className={cn(
+                  "px-6 py-3 h-auto text-sm text-white rounded-2xl shadow-none transition-colors",
+                  isGenerating
+                    ? "bg-pastel-blue"
+                    : hasGeneratedWords
+                      ? "bg-emerald-500 hover:bg-emerald-600"
+                      : "bg-zinc-800 hover:bg-zinc-700"
+                )}
               >
                 {isGenerating ? (
                   <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
@@ -804,7 +801,7 @@ function TeacherSetup({ onCreate, onBack, error }: { onCreate: (words: string[],
                 )}
               </Button>
             </div>
-            <p className="text-[10px] text-zinc-400 font-bold">주제를 입력하면 AI가 관련 낱말 20개를 만들어드려요!</p>
+            <p className="text-xs text-zinc-400 font-bold">이 주제들로 입력해 주세요: 동물, 과일, 채소, 학교, 우주, 속담</p>
           </div>
 
           <div>
@@ -1363,7 +1360,7 @@ function RoomView({
                   key={p.id}
                   className={cn(
                     "flex items-center justify-between p-5 rounded-2xl transition-all border",
-                    p.id === auth.currentUser?.uid 
+                    p.id === currentUserId 
                       ? "bg-pastel-purple-light border-pastel-purple/20 shadow-lg shadow-pastel-purple/5" 
                       : "bg-zinc-50 border-zinc-100 hover:bg-white hover:border-zinc-200"
                   )}

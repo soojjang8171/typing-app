@@ -22,6 +22,7 @@ export interface Participant {
   };
   totalScore: number;
   lastUpdated: number;
+  lastCorrectAt?: number;
 }
 
 export interface GameState {
