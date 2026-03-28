@@ -313,10 +313,8 @@ export default function App() {
           })
         );
         
-        if (user) {
-          const me = pList.find(p => p.id === user.uid);
-          if (me) setMyParticipant(me);
-        }
+        const me = pList.find(p => p.id === currentUserId);
+        if (me) setMyParticipant(me);
       },
       (error) => handleFirestoreError(error, OperationType.GET, `rooms/${room.id}/participants`)
     );
@@ -342,7 +340,7 @@ export default function App() {
       unsubscribe();
       unsubscribeRoom();
     };
-  }, [room?.id, user?.uid]);
+  }, [room?.id]);
 
   // Timer logic
   useEffect(() => {
